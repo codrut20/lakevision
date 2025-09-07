@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Request, Response, status
+from fastapi import FastAPI, Depends, HTTPException, Request, Response, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from authlib.integrations.starlette_client import OAuth
@@ -8,11 +8,11 @@ from starlette.responses import JSONResponse
 from lakeviewer import LakeView
 from app.insights.runner import InsightsRunner
 from fastapi import Query
-from typing import Generator, Any
+from typing import Generator, Any, List, Optional, Literal, Dict
 from pyiceberg.table import Table
 import time, os, requests
 from threading import Timer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import importlib
 import logging
 import json
@@ -22,6 +22,11 @@ import decimal
 import datetime as dt
 import uuid
 import pandas as pd
+from app.insights.rules import RuleOut, ALL_RULES_OBJECT
+from app.storage import get_storage
+from datetime import datetime, timezone
+from croniter import croniter
+from app.scheduler import job_storage as schedule_storage, JobSchedule
 
 AUTH_ENABLED        = True if os.getenv("PUBLIC_AUTH_ENABLED", '')=='true' else False
 CLIENT_ID           = os.getenv("PUBLIC_OPENID_CLIENT_ID", '')
@@ -295,11 +300,40 @@ def logout(request: Request):
     return RedirectResponse(REDIRECT_URI)
 
 # Insights API
+@app.get("/api/tables/{table_id}/insights/latest")
+def get_table_insights(
+    table_id: str,
+    page: int = Query(1, ge=1, description="The page number to retrieve."),
+    size: int = Query(5, ge=1, description="The number of items per page.")
+):
+    """
+    Retrieves a paginated list of the latest insight runs for a specific table.
+    """
+    runner = InsightsRunner(lv)
+
+    # Call the updated method that returns paginated data
+    paginated_data = runner.get_latest_run(table_id, page=page, size=size)
+
+    # Convert the items for the current page to dictionaries
+    items_as_dicts = [run.__dict__ for run in paginated_data["items"]]
+
+    # Return the final response in the format expected by the frontend
+    return {
+        "items": items_as_dicts,
+        "total": paginated_data["total"]
+    }
+
+
+# Insights API
 @app.get("/api/tables/{table_id}/insights")
-def get_table_insights(table_id: str, request: Request):
+def get_table_insights(table_id: str, rule_ids: Optional[List[str]] = Query(
+        None, 
+        alias="rule_ids", 
+        description="List of rule IDs to run. If omitted, all rules will be run."
+    )):
     runner = InsightsRunner(lv)
     try:
-        results = runner.run_for_table(table_id)
+        results = runner.run_for_table(table_id, rule_ids)
         return [insight.__dict__ for insight in results]
     except Exception as e:
         logging.error(f"Insights error for table {table_id}: {str(e)}")
@@ -319,6 +353,11 @@ def get_namespace_insights(
     except Exception as e:
         logging.error(f"Insights error for namespace {namespace}: {str(e)}")
         raise LVException("insight", f"Failed to compute insights for namespace {namespace}: {e}")
+
+
+@app.get("/api/lakehouse/insights/rules", response_model=List[RuleOut])
+def get_lakehouse_insights():
+    return ALL_RULES_OBJECT
 
 
 @app.get("/api/lakehouse/insights")
@@ -355,3 +394,150 @@ def refresh_namespace_and_tables():
 schedule_cleanup()
 refresh_namespace_and_tables()
 
+# --- In-Memory Storage (for demonstration purposes) ---
+# In a real application, you would use a database (like Redis or your SQL DB)
+# to store the status and results of jobs so they persist across server restarts.
+job_storage: Dict[str, Dict[str, Any]] = {}
+
+
+# --- Pydantic Models for API Data Structure ---
+
+class RunRequest(BaseModel):
+    namespace: str
+    table_name: str | None = None
+    rules_requested: List[str]
+
+class RunResponse(BaseModel):
+    run_id: str
+    message: str = "Job accepted and is running in the background."
+
+class StatusResponse(BaseModel):
+    run_id: str
+    status: Literal["pending", "running", "complete", "failed"]
+    details: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    results: List[Dict[str, Any]] | None = None
+
+
+# --- The Long-Running Task Logic ---
+
+def run_insights_job(run_id: str, namespace: str, table_name: str | None, rules: List[str]):
+    """
+    This is the core function that runs in the background.
+    It simulates a long-running process to generate insights.
+    """
+    print(f"[{datetime.now()}] Starting background job: {run_id}")
+    
+    job_storage[run_id].update({
+        "status": "running",
+        "started_at": datetime.now(),
+        "details": f"Processing {len(rules)} rules for '{namespace}'..."
+    })
+
+    try:
+
+        runner = InsightsRunner(lv)
+        results = runner.run_for_table(table_identifier=namespace+"."+table_name, rule_ids=rules)
+
+        print(f"[{datetime.now()}] Job {run_id} completed successfully.")
+        job_storage[run_id].update({
+            "status": "complete",
+            "finished_at": datetime.now(),
+            "details": "Job finished successfully.",
+            "results": results,
+        })
+
+    except Exception as e:
+        print(f"[{datetime.now()}] Job {run_id} failed: {e}")
+        job_storage[run_id].update({
+            "status": "failed",
+            "finished_at": datetime.now(),
+            "details": f"An error occurred: {str(e)}",
+        })
+
+
+@app.post("/api/start-run", response_model=RunResponse, status_code=202)
+def start_manual_run(
+    run_request: RunRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Accepts a request to run an insight job, starts it in the background,
+    and immediately returns a run_id for status tracking.
+    """
+    run_id = str(uuid.uuid4())
+    
+    # Store initial "pending" state
+    job_storage[run_id] = {"status": "pending"}
+    
+    # Add the long-running function to the background tasks
+    background_tasks.add_task(
+        run_insights_job,
+        run_id,
+        run_request.namespace,
+        run_request.table_name,
+        run_request.rules_requested,
+    )
+    
+    return {"run_id": run_id}
+
+
+@app.get("/run-status/{run_id}", response_model=StatusResponse)
+def get_run_status(run_id: str):
+    """
+    Retrieves the current status and results of a background job.
+    """
+    job = job_storage.get(run_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Run ID not found.")
+    
+    return StatusResponse(run_id=run_id, **job)
+
+class JobScheduleRequest(BaseModel):
+    """Defines the user-provided data for creating a new scheduled job."""
+    namespace: str
+    table_name: Optional[str] = None
+    rules_requested: List[str]
+    cron_schedule: str # e.g., "0 * * * *" for hourly
+    created_by: str # e.g., user's email or ID
+
+class JobScheduleResponse(JobScheduleRequest):
+    """Defines the full job schedule object as stored in the DB."""
+    id: str
+    is_enabled: bool = True
+    next_run_timestamp: datetime
+    last_run_timestamp: Optional[datetime] = None
+    created_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+@app.post("/api/schedules", response_model=JobScheduleResponse, status_code=201)
+def create_schedule(schedule_request: JobScheduleRequest):
+    """
+    Creates and stores a new job schedule.
+    The cron_schedule format is based on standard cron syntax.
+    """
+    try:
+        # Validate the cron expression and calculate the first run time
+        now = datetime.now(timezone.utc)
+        iterator = croniter(schedule_request.cron_schedule, now)
+        next_run = iterator.get_next(datetime)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid cron_schedule format: '{schedule_request.cron_schedule}'. Error: {e}"
+        )
+    
+    # Create an instance of the JobSchedule dataclass for internal use/storage
+    new_schedule = JobSchedule(
+        next_run_timestamp=next_run,
+        **schedule_request.model_dump()
+    )
+    
+    # Store the dataclass object in our "database" after converting it to a dict
+    schedule_storage.save(new_schedule)
+    
+    print(f"Created new schedule {new_schedule.id}. Next run at: {next_run}")
+    
+    # Return the new schedule object; FastAPI will convert it to the response model
+    return new_schedule
