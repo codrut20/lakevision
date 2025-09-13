@@ -38,13 +38,18 @@ CHECK_VENV = \
 
 .PHONY: init-be
 init-be:
-	cd be && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt -r requirements-dev.txt
+	cd be && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt -r requirements-dev.txt
 
 
 .PHONY: run-be
 run-be:
 	$(CHECK_VENV)
 	cd be && set -a && source ../.env && set +a && PYTHONPATH=app ../$(VENV_PYTHON) -m uvicorn app.api:app --reload --port 8000
+
+.PHONY: run-scheduler
+run-scheduler:
+	$(CHECK_VENV)
+	cd be && set -a && source ../.env && set +a && PYTHONPATH=app ../$(VENV_PYTHON) app/scheduler.py
 
 .PHONY: clean-be
 clean-be:

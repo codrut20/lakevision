@@ -1,15 +1,16 @@
 import time
 from datetime import datetime, timezone
 from croniter import croniter
-from insights.runner import execute_job
-from insights.job_schedule import JobSchedule
+from app.insights.runner import execute_job
+from app.insights.job_schedule import JobSchedule
 import os
-from storage import get_storage
-
+from app.storage import get_storage
+print("here")
 os.environ['DATABASE_URL'] = "postgresql://db_user:testpass@192.168.1.101:5432/lakevision"
 job_storage = get_storage(model=JobSchedule)
 job_storage.connect()
 job_storage.ensure_table()
+print("here")
 
 def run_scheduler_cycle():
     """
@@ -20,9 +21,12 @@ def run_scheduler_cycle():
     # 1. Find all active jobs that are due to run.
     now = datetime.now(timezone.utc)
     # This query is conceptual; your storage implementation would handle it.
-    schedules_to_run = job_storage.query("SELECT * FROM jobschedules WHERE is_enabled = TRUE AND next_run_timestamp <= ?", (now,))
+    schedules_to_run = job_storage.execute_raw_select_query("SELECT * FROM jobschedules WHERE is_enabled = TRUE AND next_run_timestamp <= :current_time", {"current_time": now.isoformat()})
 
-    for schedule in schedules_to_run:
+    schedules = [JobSchedule(**data) for data in schedules_to_run]
+
+    for schedule in schedules:
+        print(schedule)
         print(f"Triggering job for schedule: {schedule.id}")
         
         # 2. Trigger the job execution (ideally asynchronously).

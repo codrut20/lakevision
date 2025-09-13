@@ -2,7 +2,7 @@ from pyiceberg.table import Table
 from pyiceberg.types import StructType, ListType, MapType, UUIDType
 from typing import Optional
 from dataclasses import dataclass, field
-from insights.utils import qualified_table_name
+from app.insights.utils import qualified_table_name
 import yaml
 import os
 import uuid

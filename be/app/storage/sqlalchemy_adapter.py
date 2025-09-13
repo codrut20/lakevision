@@ -332,7 +332,7 @@ class SQLAlchemyStorage(StorageInterface[T]):
         with engine.connect() as conn:
             stmt = text(sql_query)
             result = conn.execute(stmt, params or {})
-            return [dict(row) for row in result.mappings().all()]
+            return [self._deserialize_row(dict(row)) for row in result.mappings().all()]
 
     def get_by_attribute(
         self,

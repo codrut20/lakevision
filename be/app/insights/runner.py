@@ -3,6 +3,9 @@ from .rules import Insight, ALL_RULES_OBJECT, InsightRun
 from .utils import qualified_table_name, get_namespace_and_table_name
 from app.storage import run_storage
 from .job_schedule import JobSchedule
+from app.lakeviewer import LakeView
+
+lv = LakeView()
 
 def execute_job(schedule: JobSchedule):
     """
@@ -15,24 +18,11 @@ def execute_job(schedule: JobSchedule):
     if schedule.table_name:
         target += f".{schedule.table_name}"
 
-    raw_insights = runner.run_for_target(target, rule_ids=schedule.rules_requested)
+    print(target)
 
-    records_to_save = []
-    for insight in raw_insights:
-        record = InsightRun(
-            namespace=insight.namespace,
-            table=insight.table,
-            run_type='auto', # This is an automated run
-            rule_id=insight.rule.id,
-            rule_name=insight.rule.name,
-            details=insight.to_dict()
-        )
-        records_to_save.append(record)
-    
-    if records_to_save:
-        run_storage.save_many(records_to_save)
+    runner.run_for_table(table_identifier=target, rule_ids=schedule.rules_requested, type="auto")
 
-    print(f"Execution finished for schedule {schedule.schedule_id}. Found {len(records_to_save)} insights.")
+    print(f"Execution finished for schedule {schedule.id}.")
 
 class InsightsRunner:
     def __init__(self, lakeview):
@@ -66,10 +56,14 @@ class InsightsRunner:
             "total": total_count
         }
 
-    def run_for_table(self, table_identifier, rule_ids: List[str] = None) -> List[Insight]:
+    def run_for_table(self, table_identifier, rule_ids: List[str] = None, type : str = "manual") -> List[Insight]:
         table = self.lakeview.load_table(table_identifier)
+
+        print(rule_ids)
     
         all_valid_ids: Set[str] = {rule.id for rule in ALL_RULES_OBJECT}
+
+        print(all_valid_ids)
         
         ids_to_run: Set[str]
         
@@ -77,7 +71,9 @@ class InsightsRunner:
             ids_to_run = all_valid_ids
         else:
             provided_ids = set(rule_ids)
+            print(provided_ids)
             invalid_ids = provided_ids - all_valid_ids
+            print(invalid_ids)
             
             if invalid_ids:
                 raise ValueError(f"Invalid rule IDs provided: {', '.join(sorted(invalid_ids))}")
@@ -96,7 +92,7 @@ class InsightsRunner:
         run = InsightRun(
             namespace=namespace,
             table_name=table_name,
-            run_type='manual',
+            run_type=type,
             results=run_result,
             rules_requested=list(ids_to_run)
         )
