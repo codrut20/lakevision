@@ -6,7 +6,7 @@ from starlette.config import Config
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse
 from lakeviewer import LakeView
-from app.insights.runner import InsightsRunner
+from insights.runner import InsightsRunner
 from fastapi import Query
 from typing import Generator
 from pyiceberg.table import Table
