@@ -38,7 +38,7 @@ class InsightsRunner:
     def __init__(self, lakeview):
         self.lakeview = lakeview
 
-    def get_latest_run(self, table_identifier: str, page: int, size: int):
+    def get_latest_run(self, table_identifier: str, size: int):
         """
         Fetches a paginated list of insight runs from storage.
         """
@@ -49,22 +49,13 @@ class InsightsRunner:
             "table_name": table_name
         }
 
-        # 1. Get the total count of documents matching the criteria first
         total_count = run_storage.get_aggregate("COUNT", "*", criteria)
         
-        # 2. Calculate skip and limit for pagination
-        skip = (page - 1) * size
-        
-        # 3. Fetch the paginated slice of documents
-        results = run_storage.get_by_attributes(criteria, skip=skip, limit=size)
+        results = run_storage.get_by_attributes(criteria, limit=size)
         
         run_storage.disconnect()
-        
-        # 4. Return both the items for the page and the total count
-        return {
-            "items": results,
-            "total": total_count
-        }
+
+        return results
 
     def run_for_table(self, table_identifier, rule_ids: List[str] = None) -> List[Insight]:
         table = self.lakeview.load_table(table_identifier)

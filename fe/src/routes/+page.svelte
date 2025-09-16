@@ -17,7 +17,6 @@
 		Loading,
 		Button,
 		ButtonSet,
-		DataTable,
 		Pagination,
 		Modal,
 		TextInput,
@@ -103,7 +102,34 @@
 	let pageSize = 5;
 	let totalItems = 0;
 
-	const insightHeaders = [ { key: 'run_type', value: 'Run Type' }, { key: 'run_timestamp', value: 'Timestamp' }, { key: 'rules_and_results', value: 'Rules & Results' } ];
+	const virtualTableColumns = {
+		'Run Type': '',
+		'Timestamp': '',
+		'Rules & Results': ''
+	};
+    
+    let columnWidths = {
+        'Run Type': 150,
+        'Timestamp': 250,
+        'Rules & Results': 600
+    };
+
+    // Calculate height for each individual row based on its content
+    let insightRowHeights = [];
+    $: {
+        insightRowHeights = insightRuns.map(run => {
+            const baseHeight = 40; // Base padding for the row
+            const heightPerRule = 28; // Estimated height for each rule name line
+            const heightPerExpandedMessage = 65; // Estimated height for an expanded message card
+
+            const rulesListHeight = run.rules_requested.length * heightPerRule;
+            const messagesHeight = run.results.length * heightPerExpandedMessage;
+            
+            // A row's height is the space for the rules list plus the space for all its potential messages.
+            return Math.max(baseHeight, rulesListHeight + messagesHeight);
+        });
+    }
+
 	let manualRunData = { namespace: '', tableName: '', rules_requested: [] };
     let manualRunSelectAll = false;
     let manualRunIndeterminate = false;
@@ -164,12 +190,7 @@
 			}
 			
 			data.sort((a, b) => new Date(b.run_timestamp) - new Date(a.run_timestamp));
-			
-			insightRuns = data.map((run) => ({
-				...run,
-				id: run.id.toString(),
-				rules_and_results: run.rules_requested 
-			}));
+			insightRuns = data;
 		} catch (error) {
 			console.error('Error fetching table insights:', error);
 			alert('Could not refresh insights data.');
@@ -178,27 +199,19 @@
 		}
 	}
 	
-    async function onPaginationChange(event) {
-        const { page: newPage, pageSize: newPageSize } = event.detail;
-
-        // This comparison is the key to determining the user's intent.
-        // Did the page number change? If so, the user clicked a page arrow.
-        if (newPage !== currentPage) {
-            // INTENT: Page changed.
-            // We can trust the new page number from the event.
-            // We MUST ignore the buggy pageSize from the event and use our own trusted state.
-            currentPage = newPage;
-            await fetchTableInsights(currentPage, pageSize);
-
-        } else if (newPageSize !== pageSize) {
-            // INTENT: Page size changed.
-            // The page number didn't change, so the user must have used the dropdown.
-            // We trust the new page size and reset the page to 1.
-            currentPage = 1;
-            pageSize = newPageSize;
-            await fetchTableInsights(currentPage, pageSize);
-        }
-    }
+	async function onPaginationChange(event) {
+		const { page: newPage, pageSize: newPageSize } = event.detail;
+		const pageChanged = newPage !== currentPage;
+		const pageSizeChanged = newPageSize !== pageSize;
+		if (pageSizeChanged) {
+			currentPage = 1;
+			pageSize = newPageSize;
+			await fetchTableInsights(currentPage, pageSize);
+		} else if (pageChanged) {
+			currentPage = newPage;
+			await fetchTableInsights(currentPage, pageSize);
+		}
+	}
 
 	async function fetchAllRules() {
 		try {
@@ -337,49 +350,73 @@
 				</ButtonSet>
 				<div style="margin-top: 1.5rem;">
 					{#if insights_loading}
-						<DataTableSkeleton rowCount={3} columnCount={3} />
+						<div style="height: 500px;"><DataTableSkeleton rowCount={5} columnCount={3} /></div>
 					{:else if insightRuns.length === 0}
 						<p>No insight runs found. Click "Run Insights" to start a new analysis.</p>
 					{:else}
-						<DataTable id="insights-table" headers={insightHeaders} rows={insightRuns}>
-							<svelte:fragment slot="cell" let:row let:cell>
-								{#if cell.key === 'run_type'}
-									<Tag type={cell.value === 'manual' ? 'cyan' : 'green'} title={cell.value}>{cell.value}</Tag>
-								{:else if cell.key === 'run_timestamp'}
-									{new Date(cell.value).toLocaleString()}
-								{:else if cell.key === 'rules_and_results'}
-									<div class="rules-cell-container">
-										{#each cell.value as ruleId}
-											{@const hasResults = row.results.some(result => result.code === ruleId)}
-											{@const compositeKey = `${row.id}-${ruleId}`}
-											{@const ruleResults = row.results.filter(r => r.code === ruleId)}
-											<div class="rule-item" class:clickable={hasResults} on:click={() => { if(hasResults) { expandedRules[compositeKey] = !expandedRules[compositeKey]; expandedRules = expandedRules; } }} role={hasResults ? 'button' : 'listitem'} tabindex={hasResults ? 0 : -1} on:keydown={(e) => { if(e.key === 'Enter' && hasResults) e.currentTarget.click() }}>
-												<div class="rule-item-header">
-													{#if hasResults}
-														<WarningAltFilled size={16} style="color: var(--cds-support-03, #ff832b);" />
-													{:else}
-														<CheckmarkFilled size={16} style="color: var(--cds-support-02, #24a148);" />
-													{/if}
-													<span>{ruleIdToNameMap.get(ruleId) || ruleId}</span>
-												</div>
-												{#if expandedRules[compositeKey]}
-													<div class="rule-details">
-														{#each ruleResults as result}
-															<div class="message-card">
-																<p><strong>Message:</strong> {result.message}</p>
-																<p><strong>Suggested Action:</strong> {result.suggested_action}</p>
-															</div>
-														{/each}
+						<div class="insights-virtual-table-container">
+							<VirtualTable 
+								data={insightRuns} 
+								columns={virtualTableColumns} 
+								tableHeight={500}
+								rowHeights={insightRowHeights}
+								bind:columnWidths
+							>
+								<div slot="cell" let:row let:columnKey>
+									{#if columnKey === 'Run Type'}
+										<div class="cell-padding">
+											<Tag type={row.run_type === 'manual' ? 'cyan' : 'green'} title={row.run_type}>{row.run_type}</Tag>
+										</div>
+									{:else if columnKey === 'Timestamp'}
+										<div class="cell-padding">
+											{new Date(row.run_timestamp).toLocaleString()}
+										</div>
+									{:else if columnKey === 'Rules & Results'}
+										<div class="rules-cell-container">
+											{#each row.rules_requested as ruleId}
+												{@const hasResults = row.results.some(result => result.code === ruleId)}
+												{@const compositeKey = `${row.id}-${ruleId}`}
+												{@const ruleResults = row.results.filter(r => r.code === ruleId)}
+
+												<div 
+													class="rule-item" 
+													class:clickable={hasResults} 
+													on:click={() => { 
+														if(hasResults) {
+															expandedRules[compositeKey] = !expandedRules[compositeKey];
+															expandedRules = expandedRules;
+														}
+													}}
+													role={hasResults ? 'button' : 'listitem'}
+													tabindex={hasResults ? 0 : -1}
+													on:keydown={(e) => { if(e.key === 'Enter' && hasResults) e.currentTarget.click() }}
+												>
+													<div class="rule-item-header">
+														{#if hasResults}
+															<WarningAltFilled size={16} style="color: var(--cds-support-03, #ff832b);" />
+														{:else}
+															<CheckmarkFilled size={16} style="color: var(--cds-support-02, #24a148);" />
+														{/if}
+														<span>{ruleIdToNameMap.get(ruleId) || ruleId}</span>
 													</div>
-												{/if}
-											</div>
-										{/each}
-									</div>
-								{:else}
-									{cell.value}
-								{/if}
-							</svelte:fragment>
-						</DataTable>
+													
+													{#if expandedRules[compositeKey]}
+														<div class="rule-details">
+															{#each ruleResults as result}
+																<div class="message-card">
+																	<p><strong>Message:</strong> {result.message}</p>
+																	<p><strong>Suggested Action:</strong> {result.suggested_action}</p>
+																</div>
+															{/each}
+														</div>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
+								</div>
+							</VirtualTable>
+						</div>
 						{#if totalItems > pageSize}
 							<Pagination
 								page={currentPage}
@@ -454,14 +491,45 @@
     .modal-divider-light { margin: 0.75rem 0; border: none; border-top: 1px solid #f4f4f4; }
     
     /* --- Styles for the updated table cell --- */
-    .rules-cell-container { display: flex; flex-direction: column; gap: 0.5rem; }
-    .rule-item { padding: 4px; border-radius: 4px; transition: background-color 0.2s; }
-    .rule-item.clickable { cursor: pointer; }
-    .rule-item.clickable:hover { background-color: var(--cds-hover-ui, #e5e5e5); }
-    .rule-item-header { display: flex; align-items: center; gap: 0.5rem; }
-    .rule-details { margin-top: 0.5rem; padding-left: 24px; display: flex; flex-direction: column; gap: 0.75rem; }
-    .message-card { background-color: var(--cds-background, #f4f4f4); border-left: 3px solid var(--cds-support-03, #ff832b); padding: 0.5rem 1rem; border-radius: 4px; }
-    .message-card p { margin: 0.2rem 0; font-size: 13px; }
+    .rules-cell-container {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+		padding: 8px 0;
+    }
+    .rule-item {
+        padding: 4px;
+        border-radius: 4px;
+        transition: background-color 0.2s;
+    }
+    .rule-item.clickable {
+        cursor: pointer;
+    }
+    .rule-item.clickable:hover {
+        background-color: var(--cds-hover-ui, #e5e5e5);
+    }
+    .rule-item-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .rule-details {
+        margin-top: 0.5rem;
+        padding-left: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+    .message-card {
+        background-color: var(--cds-background, #f4f4f4);
+        border-left: 3px solid var(--cds-support-03, #ff832b);
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+    }
+    .message-card p {
+        margin: 0.2rem 0;
+        font-size: 13px;
+    }
 
 	/* --- Final CSS fix for the icon button size --- */
 	:global(button.cds--btn--icon-only) {
@@ -470,9 +538,14 @@
 		flex-grow: 0 !important;
 	}
 
-	/* --- Final CSS fix for the table column width --- */
-	:global(#insights-table th:nth-child(3)),
-	:global(#insights-table td:nth-child(3)) {
-		width: 60%;
+    .insights-virtual-table-container :global(.cell) {
+        white-space: normal;
+        overflow: hidden;
+        height: auto;
+    }
+
+	/* Add some padding to the simple cells to vertically align content */
+	.cell-padding {
+		padding-top: 8px;
 	}
 </style>

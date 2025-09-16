@@ -5,7 +5,7 @@ from authlib.integrations.starlette_client import OAuth
 from starlette.config import Config
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse
-from lakeviewer import LakeView
+from app.lakeviewer import LakeView
 from app.insights.runner import InsightsRunner
 from fastapi import Query
 from typing import Generator, Any, List, Optional, Literal, Dict
@@ -314,7 +314,6 @@ def logout(request: Request):
 @app.get("/api/tables/{table_id}/insights/latest")
 def get_table_insights(
     table_id: str,
-    page: int = Query(1, ge=1, description="The page number to retrieve."),
     size: int = Query(5, ge=1, description="The number of items per page.")
 ):
     """
@@ -323,16 +322,13 @@ def get_table_insights(
     runner = InsightsRunner(lv)
 
     # Call the updated method that returns paginated data
-    paginated_data = runner.get_latest_run(table_id, page=page, size=size)
+    paginated_data = runner.get_latest_run(table_id, size=size)
 
     # Convert the items for the current page to dictionaries
-    items_as_dicts = [run.__dict__ for run in paginated_data["items"]]
+    items_as_dicts = [run.__dict__ for run in paginated_data]
 
     # Return the final response in the format expected by the frontend
-    return {
-        "items": items_as_dicts,
-        "total": paginated_data["total"]
-    }
+    return items_as_dicts
 
 
 # Insights API
