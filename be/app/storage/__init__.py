@@ -3,7 +3,7 @@ from typing import Optional, Type
 
 from .interface import StorageInterface, T
 from .sqlalchemy_adapter import SQLAlchemyStorage
-from insights.rules import InsightRun
+from app.insights.rules import InsightRun
 
 def get_storage(
     model: Type[T],

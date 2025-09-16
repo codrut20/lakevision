@@ -1,10 +1,10 @@
 import time
 from datetime import datetime, timezone
 from croniter import croniter
-from insights.runner import execute_job
-from insights.job_schedule import JobSchedule
+from app.insights.runner import execute_job
+from app.insights.job_schedule import JobSchedule
 import os
-from storage import get_storage
+from app.storage import get_storage
 
 os.environ['DATABASE_URL'] = "postgresql://db_user:testpass@192.168.1.101:5432/lakevision"
 job_storage = get_storage(model=JobSchedule)
