@@ -264,7 +264,7 @@
 	$: if (selectedLimit) { sample_limit.set(selectedLimit.id); }
 	async function get_namespace_special_properties(namespace_name) { ns_props = await fetch(`/api/namespaces/${namespace_name}/special-properties`, { headers: { 'Content-Type': 'application/json', 'X-Page-Session-ID': pageSessionId } }).then((res) => res.json()); return ns_props; }
 	async function get_table_special_properties(table_id) { tab_props = await fetch(`/api/tables/${table_id}/special-properties`, { headers: { 'Content-Type': 'application/json', 'X-Page-Session-ID': pageSessionId } }).then((res) => res.json()); return tab_props; }
-	async function get_data(table_id, feature) { let loading = true; if (!table_id || table_id == null || table_id == '.' || !table) { loading = false; return; } try { const res = await fetch(`/api/tables/${table_id}/${feature}`, { headers: { 'Content-Type': 'application/json', 'X-Page-Session-ID': pageSessionId } }); const statusCode = res.status; if (res.ok) { const data = await res.json(); return data; } else if (statusCode == 403) { console.log('No Access'); error = 'No Access'; access_allowed = false; return error; } else if (res.status === 401) { goto('/api/login?namespace=' + namespace + '&table=' + table + '&sample_limit=${$sample_limit}'); } else { console.error('Failed to fetch data:', res.statusText); error = res.statusText; } } finally { loading = false; } }
+	async function get_data(table_id, feature) { let loading = true; if (!table_id || table_id == null || table_id == '.' || !table) { loading = false; return; } try { const res = await fetch(`/api/tables/${table_id}/${feature}`, { headers: { 'Content-Type': 'application/json', 'X-Page-Session-ID': pageSessionId } }); const statusCode = res.status; if (res.ok) { const data = await res.json(); return data; } else if (statusCode == 403) { console.log('No Access'); error = 'No Access'; access_allowed = false; return error; } else if (res.status === 401) { goto('/api/login?namespace=' + namespace + '&table=' + table + '&sample_limit=' + $sample_limit); } else { console.error('Failed to fetch data:', res.statusText); error = res.statusText; } } finally { loading = false; } }
 	let selected = 0;
 	$: reset(table);
 	let callOnce = 0;
@@ -294,7 +294,7 @@
 		}
 	}
 
-	function set_copy_url() { url = window.location.origin; url = url + '/?namespace=' + namespace + '&table=' + table + '&sample_limit=${$sample_limit}'; }
+	function set_copy_url() { url = window.location.origin; url = url + '/?namespace=' + namespace + '&table=' + table + '&sample_limit=' + $sample_limit; }
 	function reset(table) {
 		lastSampleLimit = null; partitions = []; snapshots = []; sample_data = []; data_change = []; insightRuns = []; allRules = []; currentPage = 1; totalItems = 0;
 		partitions_loading = false; sort_order_loading = false; snapshots_loading = false; sample_data_loading = false; data_change_loading = false; properties_loading = false; partition_specs_loading = false; schema_loading = false; summary_loading = false; schema = []; summary = []; partition_specs = []; properties = []; sort_order = []; 

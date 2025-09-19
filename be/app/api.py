@@ -101,6 +101,10 @@ class CleanJSONResponse(JSONResponse):
 # --- Simplified FastAPI Application ---
 
 app = FastAPI(default_response_class=CleanJSONResponse)
+# Auto-prefix with current package if user passes a bare name like "authz"
+if "." not in AUTHZ_MODULE:
+    # assummes the authz module is under app package/folder
+    AUTHZ_MODULE = f"app.{AUTHZ_MODULE}"
 
 class LVException(Exception):
     def __init__(self, name: str, message: str):
@@ -259,6 +263,8 @@ def root(request: Request):
         user = check_auth(request)
         if not user:
             return {"message": "You are not logged in."}
+        else:
+            return {"message": f"You are logged in as {user}"}
     return "Hello, no auth enabled"
        
 @app.get("/api/tables")
