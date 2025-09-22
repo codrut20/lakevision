@@ -2,11 +2,13 @@ import dataclasses
 import json
 from typing import Any, Dict, List, Optional, Type
 from sqlalchemy import (create_engine, text, inspect, Table, Column, MetaData,
-                          String, Integer, Float, Boolean, Text)
+                          String, Integer, Float, Boolean, Text, bindparam)
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-from typing import get_origin, Literal, Any, List
+from typing import get_origin, Literal, Any, List, get_args, Union
 from .interface import StorageInterface, T, AggregateFunction
+from datetime import datetime
+from dateutil.parser import parse
 
 class SQLAlchemyStorage(StorageInterface[T]):
     """
@@ -17,10 +19,30 @@ class SQLAlchemyStorage(StorageInterface[T]):
         self._db_url = db_url
         self._engine: Optional[Engine] = None
         self._field_names = {f.name for f in dataclasses.fields(self.model)}
-        self._complex_fields = {
-            f.name for f in dataclasses.fields(self.model) if get_origin(f.type) in [list, dict, tuple]
-        }
+        
+        self._complex_fields = set()
+        self._datetime_fields = set()
+        for f in dataclasses.fields(self.model):
+            origin = get_origin(f.type)
+            # Handle simple list, dict, tuple
+            if origin in [list, dict, tuple]:
+                self._complex_fields.add(f.name)
+            # Handle Optional[list], etc. which becomes Union[list, None]
+            elif origin is Union:
+                # Check the types inside the Union
+                for arg in get_args(f.type):
+                    if get_origin(arg) in [list, dict, tuple]:
+                        self._complex_fields.add(f.name)
+                        break
+                    if arg is datetime:
+                        self._datetime_fields.add(f.name)
+                        break
+            elif f.type is datetime:
+                self._datetime_fields.add(f.name)
+
         print(f"✅ Initialized SQLAlchemyStorage for model '{model.__name__}'")
+        print(f"   Complex fields (JSON): {self._complex_fields}")
+        print(f"   Datetime fields: {self._datetime_fields}")
 
     def connect(self) -> None:
         if not self._engine:
@@ -56,13 +78,23 @@ class SQLAlchemyStorage(StorageInterface[T]):
     def _deserialize_row(self, row_dict: Dict[str, Any]) -> Dict[str, Any]:
         """Deserializes fields from JSON strings back into Python objects."""
         deserialized = row_dict.copy()
+        
+        # Deserialize complex JSON fields
         for field_name in self._complex_fields:
             if field_name in deserialized and isinstance(deserialized[field_name], str):
                 try:
                     deserialized[field_name] = json.loads(deserialized[field_name])
                 except json.JSONDecodeError:
-                    # Not a valid JSON string, leave as is
                     pass
+        
+        # Now, parse any fields that should be datetime objects
+        for field_name in self._datetime_fields:
+            if field_name in deserialized and isinstance(deserialized[field_name], str):
+                try:
+                    deserialized[field_name] = parse(deserialized[field_name])
+                except (ValueError, TypeError):
+                    deserialized[field_name] = None # Set to None if parsing fails
+
         return deserialized
 
     def ensure_table(self) -> None:
@@ -168,19 +200,7 @@ class SQLAlchemyStorage(StorageInterface[T]):
     ) -> List[T]:
         """
         Retrieves records from the database that match all specified criteria,
-        with optional pagination.
-
-        Args:
-            criteria: A dictionary where keys are attribute names and values are the
-                    values to match. E.g., {'name': 'John', 'age': 30}
-            skip: The number of records to skip (for pagination).
-            limit: The maximum number of records to return (for pagination).
-
-        Returns:
-            A list of model instances matching the criteria.
-            
-        Raises:
-            ValueError: If any attribute in criteria is not a valid field.
+        with optional pagination and support for IN clauses.
         """
         # 1. Validate all incoming attributes
         for attribute in criteria.keys():
@@ -188,31 +208,46 @@ class SQLAlchemyStorage(StorageInterface[T]):
                 raise ValueError(f"'{attribute}' is not a valid field in {self.model.__name__}")
 
         # 2. Build the WHERE clause and parameters dynamically
+        params = {}
         if not criteria:
             where_clause = ""
-            params = {}
         else:
-            clauses = [f"{attr} = :{attr}" for attr in criteria.keys()]
-            where_clause = "WHERE " + " AND ".join(clauses)
-            params = {
-                attr: json.dumps(value) if attr in self._complex_fields else value
-                for attr, value in criteria.items()
-            }
+            clauses = []
+            # Build clauses and params together to handle IN lists correctly
+            for attr, value in criteria.items():
+                if isinstance(value, list):
+                    if not value:
+                        # If the list is empty, create a condition that is always false
+                        clauses.append("1=0")
+                        continue
 
+                    # Create unique placeholders like :status_0, :status_1, etc.
+                    param_names = [f"{attr}_{i}" for i in range(len(value))]
+                    # Create the IN clause string: e.g., "status IN (:status_0, :status_1)"
+                    clauses.append(f"{attr} IN ({', '.join(':' + p for p in param_names)})")
+                    
+                    # Add the individual values to the params dict
+                    for p_name, p_value in zip(param_names, value):
+                        params[p_name] = p_value
+                else:
+                    # Handle standard equals (=) clause for non-list values
+                    clauses.append(f"{attr} = :{attr}")
+                    params[attr] = json.dumps(value) if attr in self._complex_fields else value
+            
+            where_clause = "WHERE " + " AND ".join(clauses)
+                
         # 3. Construct the final SQL statement
         sql_query = f"SELECT * FROM {self.table_name} {where_clause}"
 
-        # **NEW:** Add a sorting order for consistent pagination results.
-        # Based on your UI, we'll sort by the timestamp descending.
-        if 'run_timestamp' in self._field_names:
+        if 'created_at' in self._field_names:
+            sql_query += " ORDER BY created_at DESC"
+        elif 'run_timestamp' in self._field_names:
             sql_query += " ORDER BY run_timestamp DESC"
 
-        # **NEW:** Add LIMIT clause if a limit is provided
         if limit is not None:
             sql_query += " LIMIT :limit"
             params['limit'] = limit
 
-        # **NEW:** Add OFFSET clause if a skip value is provided
         if skip is not None:
             sql_query += " OFFSET :skip"
             params['skip'] = skip
@@ -221,7 +256,7 @@ class SQLAlchemyStorage(StorageInterface[T]):
         with engine.connect() as conn:
             stmt = text(sql_query)
             
-            # 4. Execute with the potentially updated parameters
+            # 4. Execute with the correctly built parameters
             results = conn.execute(stmt, params).mappings().all()
 
         deserialized_results = [self._deserialize_row(dict(row)) for row in results]

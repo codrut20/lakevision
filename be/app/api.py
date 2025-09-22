@@ -27,6 +27,8 @@ from app.storage import get_storage
 from datetime import datetime, timezone
 from croniter import croniter
 from app.scheduler import job_storage as schedule_storage, JobSchedule
+import dataclasses
+import traceback
 
 AUTH_ENABLED        = True if os.getenv("PUBLIC_AUTH_ENABLED", '')=='true' else False
 CLIENT_ID           = os.getenv("PUBLIC_OPENID_CLIENT_ID", '')
@@ -96,11 +98,33 @@ class CleanJSONResponse(JSONResponse):
         # cleaner as a robust final step for any content returned by endpoints.
         payload = _clean_data_recursively(content)
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    
+from contextlib import asynccontextmanager
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Code to run on application startup ---
+    print("Application startup: Connecting to databases and ensuring tables exist...")
+    
+    # Connect and create tables for both storage managers
+    background_job_storage.connect()
+    background_job_storage.ensure_table()
+    schedule_storage.connect()
+    schedule_storage.ensure_table()
+    
+    print("Startup complete. Application is ready.")
+    
+    yield # The application is now running
+    
+    # --- Code to run on application shutdown ---
+    print("Application shutdown: Disconnecting from databases...")
+    background_job_storage.disconnect()
+    schedule_storage.disconnect()
+    print("Shutdown complete.")
 
 # --- Simplified FastAPI Application ---
 
-app = FastAPI(default_response_class=CleanJSONResponse)
+app = FastAPI(default_response_class=CleanJSONResponse, lifespan=lifespan)
 # Auto-prefix with current package if user passes a bare name like "authz"
 if "." not in AUTHZ_MODULE:
     # assummes the authz module is under app package/folder
@@ -424,50 +448,111 @@ class RunResponse(BaseModel):
     run_id: str
     message: str = "Job accepted and is running in the background."
 
+from dateutil.parser import parse
+
+
+from dataclasses import dataclass, field
+
+@dataclass
+class BackgroundJob:
+    """Represents the state of a background insight run in the database."""
+    id: str  # This will be the run_id
+    namespace: str
+    table_name: Optional[str]
+    rules_requested: List[str]
+    status: Literal["pending", "running", "complete", "failed"]
+    details: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    results: Optional[List[Dict[str, Any]]] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
 class StatusResponse(BaseModel):
     run_id: str
     status: Literal["pending", "running", "complete", "failed"]
     details: str | None = None
+    rules_requested: List[str]
     started_at: datetime | None = None
     finished_at: datetime | None = None
     results: List[Dict[str, Any]] | None = None
 
+    @classmethod
+    def from_job(cls, job: BackgroundJob) -> "StatusResponse":
+        """Creates a StatusResponse instance from a BackgroundJob dataclass."""
+        job_dict = dataclasses.asdict(job)
+        
+        # Rename 'id' to 'run_id' for the API response
+        job_dict['run_id'] = job_dict.pop('id')
+        
+        # Ensure datetime fields are actual datetime objects
+        if job_dict.get('started_at') and isinstance(job_dict['started_at'], str):
+            job_dict['started_at'] = parse(job_dict['started_at'])
+        
+        if job_dict.get('finished_at') and isinstance(job_dict['finished_at'], str):
+            job_dict['finished_at'] = parse(job_dict['finished_at'])
+            
+        return cls(**job_dict)
+
+background_job_storage = get_storage(model=BackgroundJob)
+
+# Initialize a new storage manager for background jobs
+# This assumes your get_storage function can create/manage a table named 'background_jobs'
+# and map it to the BackgroundJob dataclass.
 
 # --- The Long-Running Task Logic ---
 
 def run_insights_job(run_id: str, namespace: str, table_name: str | None, rules: List[str]):
     """
     This is the core function that runs in the background.
-    It simulates a long-running process to generate insights.
+    It updates the job's status directly in the database by fetching,
+    modifying, and saving the job record.
     """
     print(f"[{datetime.now()}] Starting background job: {run_id}")
     
-    job_storage[run_id].update({
-        "status": "running",
-        "started_at": datetime.now(),
-        "details": f"Processing {len(rules)} rules for '{namespace}'..."
-    })
+    # --- Update job status to "running" ---
+    job = background_job_storage.get_by_id(run_id)
+    if not job:
+        print(f"Error: Job {run_id} not found in database at start.")
+        return
+        
+    job.status = "running"
+    job.started_at = datetime.now(timezone.utc)
+    if table_name:
+        target = namespace + "." + table_name
+    else:
+        target = namespace
+    job.details = f"Processing {len(rules)} rules for '{target}'"
+   
+    print(job.details)
+    background_job_storage.save(job)
 
     try:
-
         runner = InsightsRunner(lv)
-        results = runner.run_for_table(table_identifier=namespace+"."+table_name, rule_ids=rules)
+        # Ensure results are serializable before saving
+        results_list = [res.__dict__ for res in runner.run_for_table(table_identifier=f"{namespace}.{table_name}", rule_ids=rules)]
 
         print(f"[{datetime.now()}] Job {run_id} completed successfully.")
-        job_storage[run_id].update({
-            "status": "complete",
-            "finished_at": datetime.now(),
-            "details": "Job finished successfully.",
-            "results": results,
-        })
+        
+        # --- Update job status to "complete" ---
+        job = background_job_storage.get_by_id(run_id)
+        job.status = "complete"
+        job.finished_at = datetime.now(timezone.utc)
+        job.details = "Job finished successfully."
+        job.results = results_list
+        print(job)
+        print(type(job))
+        background_job_storage.save(job)
 
     except Exception as e:
+        print(traceback.format_exc())
         print(f"[{datetime.now()}] Job {run_id} failed: {e}")
-        job_storage[run_id].update({
-            "status": "failed",
-            "finished_at": datetime.now(),
-            "details": f"An error occurred: {str(e)}",
-        })
+
+        # --- Update job status to "failed" ---
+        job = background_job_storage.get_by_id(run_id)
+        job.status = "failed"
+        job.finished_at = datetime.now(timezone.utc)
+        job.details = f"An error occurred: {str(e)}"
+        background_job_storage.save(job)    
 
 
 @app.post("/api/start-run", response_model=RunResponse, status_code=202)
@@ -476,13 +561,21 @@ def start_manual_run(
     background_tasks: BackgroundTasks
 ):
     """
-    Accepts a request to run an insight job, starts it in the background,
-    and immediately returns a run_id for status tracking.
+    Accepts a request to run an insight job, creating a persistent record
+    in the database before starting the background task.
     """
     run_id = str(uuid.uuid4())
     
-    # Store initial "pending" state
-    job_storage[run_id] = {"status": "pending"}
+    # Create the initial job record in the database
+    new_job = BackgroundJob(
+        id=run_id,
+        namespace=run_request.namespace,
+        table_name=run_request.table_name,
+        rules_requested=run_request.rules_requested,
+        status="pending",
+        details="Job is queued to start."
+    )
+    background_job_storage.save(new_job)
     
     # Add the long-running function to the background tasks
     background_tasks.add_task(
@@ -493,20 +586,48 @@ def start_manual_run(
         run_request.rules_requested,
     )
     
-    return {"run_id": run_id}
+    return RunResponse(run_id=run_id)
 
 
 @app.get("/run-status/{run_id}", response_model=StatusResponse)
 def get_run_status(run_id: str):
     """
-    Retrieves the current status and results of a background job.
+    Retrieves the current status of a background job from the database.
     """
-    job = job_storage.get(run_id)
+    job = background_job_storage.get_by_id(run_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Run ID not found.")
     
-    return StatusResponse(run_id=run_id, **job)
+    return StatusResponse.from_job(job)
+
+
+@app.get("/api/jobs/running", response_model=List[StatusResponse])
+def get_running_jobs(namespace: str, table_name: Optional[str] = None):
+    """
+    Retrieves all jobs that are currently in 'pending' or 'running' state.
+    """
+    criteria = {
+        "namespace": namespace,
+        "status": ["pending", "running"]
+    }
+    if table_name:
+        criteria["table_name"] = table_name
+        
+    running_jobs = background_job_storage.get_by_attributes(criteria)
+    
+    if not running_jobs:
+        return []
+        
+    return [StatusResponse.from_job(job) for job in running_jobs]
+
+class JobScheduleUpdateRequest(BaseModel):
+    """Defines the user-provided data for updating a scheduled job. All fields are optional."""
+    namespace: Optional[str] = None
+    table_name: Optional[str] = None
+    rules_requested: Optional[List[str]] = None
+    cron_schedule: Optional[str] = None
+    is_enabled: Optional[bool] = None
 
 class JobScheduleRequest(BaseModel):
     """Defines the user-provided data for creating a new scheduled job."""
@@ -554,3 +675,65 @@ def create_schedule(schedule_request: JobScheduleRequest):
     
     # Return the new schedule object; FastAPI will convert it to the response model
     return new_schedule
+
+### Update a Schedule (PUT) ###
+@app.put("/api/schedules/{schedule_id}", response_model=JobScheduleResponse)
+def update_schedule(schedule_id: str, schedule_update: JobScheduleUpdateRequest):
+    """
+    Updates an existing job schedule.
+    """
+    # Fetch the existing schedule from the database
+    schedule = schedule_storage.get_by_id(schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found.")
+
+    # Get a dictionary of only the fields the user provided in the request
+    update_data = schedule_update.model_dump(exclude_unset=True)
+
+    # If the cron schedule is being changed, we must recalculate the next run time
+    if "cron_schedule" in update_data:
+        try:
+            now = datetime.now(timezone.utc)
+            iterator = croniter(update_data["cron_schedule"], now)
+            schedule.next_run_timestamp = iterator.get_next(datetime)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid cron_schedule format. Error: {e}"
+            )
+    
+    # Update the schedule object with the new values
+    for key, value in update_data.items():
+        setattr(schedule, key, value)
+    
+    # Save the updated object back to the database
+    schedule_storage.save(schedule)
+    return schedule
+
+### Delete a Schedule (DELETE) ###
+@app.delete("/api/schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_schedule(schedule_id: str):
+    """
+    Deletes a job schedule by its ID.
+    """
+    # First, check if the schedule exists to provide a proper 404 error
+    schedule = schedule_storage.get_by_id(schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found.")
+    
+    schedule_storage.delete(schedule_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+### List Schedules (GET) ###
+@app.get("/api/schedules", response_model=List[JobScheduleResponse])
+def list_schedules(namespace: str, table_name: Optional[str] = None):
+    """
+    Lists all job schedules, with optional filtering by namespace and table name.
+    """
+    criteria = {"namespace": namespace}
+    if table_name:
+        criteria["table_name"] = table_name
+    
+    schedules = schedule_storage.get_by_attributes(criteria)
+    return schedules
