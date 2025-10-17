@@ -6,7 +6,7 @@ from app.insights.runner import InsightsRunner
 from app.insights.rules import ALL_RULES_OBJECT
 from app.dependencies import get_runner
 from app.exceptions import LVException
-from app.models import RuleOut, RuleSummaryOut, InsightRun, InsightRunOut
+from app.models import RuleOut, RuleSummaryOut, InsightRun, InsightRunOut, RuleLevel
 
 router = APIRouter()
 
@@ -55,5 +55,8 @@ def get_insights_summary(
     return summary_data
 
 @router.get("/api/lakehouse/insights/rules", response_model=List[RuleOut])
-def get_insight_rules():
-    return ALL_RULES_OBJECT
+def get_insight_rules(level: Optional[RuleLevel]= None):
+    if level:
+        return [rule for rule in ALL_RULES_OBJECT if rule.level == level]
+    else:
+        return ALL_RULES_OBJECT

@@ -576,7 +576,7 @@
 
 	async function fetchAllRules() {
 		try {
-			const response = await fetch('/api/lakehouse/insights/rules');
+			const response = await fetch('/api/lakehouse/insights/rules?level=TABLE');
 			if (!response.ok) throw new Error('Failed to fetch rules');
 			allRules = await response.json();
 			ruleIdToNameMap = new Map(allRules.map((rule) => [rule.id, rule.name]));

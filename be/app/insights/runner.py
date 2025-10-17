@@ -1,9 +1,9 @@
 from typing import List, Dict, Any, Optional, Set
 from collections import defaultdict
 
-from app.insights.rules import ALL_RULES_OBJECT, INSIGHT_META
+from app.insights.rules import ALL_RULES_OBJECT, INSIGHT_META, rule_multiple_tables_same_location
 from app.insights.utils import qualified_table_name, get_namespace_and_table_name
-from app.models import Insight, InsightRun, InsightRecord, JobSchedule, InsightRunOut, ActiveInsight, InsightOccurrence, RuleSummaryOut
+from app.models import Insight, InsightRun, InsightRecord, JobSchedule, InsightRunOut, ActiveInsight, InsightOccurrence, RuleSummaryOut, RuleLevel
 from app.lakeviewer import LakeView
 from app.storage.interface import StorageInterface
 from sqlalchemy import text, bindparam
@@ -17,6 +17,7 @@ class InsightsRunner:
         self.run_storage = run_storage
         self.insight_storage = insight_storage
         self.active_insight_storage = active_insight_storage
+        self._tables_by_location: Dict[str, List[str]] = {}
 
     def get_latest_run(self, namespace: str, size: int, table_name: str = None, showEmpty: bool = True) -> List[InsightRun]:
         """
@@ -109,30 +110,8 @@ class InsightsRunner:
             )
             
         return final_summary
-
-    def run_for_table(self, table_identifier, rule_ids: List[str] = None, type: str = "manual") -> List[Insight]:
-        table = self.lakeview.load_table(table_identifier)
-
-        all_valid_ids: Set[str] = {rule.id for rule in ALL_RULES_OBJECT}
-        ids_to_run: Set[str]
-        
-        if rule_ids is None:
-            ids_to_run = all_valid_ids
-        else:
-            provided_ids = set(rule_ids)
-            invalid_ids = provided_ids - all_valid_ids
-            if invalid_ids:
-                raise ValueError(f"Invalid rule IDs provided: {', '.join(sorted(invalid_ids))}")
-            ids_to_run = provided_ids
-
-        namespace, table_name = get_namespace_and_table_name(table_identifier)
-
-        run_result: List[Insight] = [
-            insight
-            for rule in ALL_RULES_OBJECT
-            if rule.id in ids_to_run and (insight := rule.method(table))
-        ]
-
+    
+    def _store_results(self, run_result: List[Insight], ids_to_run: Set[str], type: str, namespace: Optional[str], table_name: Optional[str]):
         run = InsightRun(
             namespace=namespace,
             table_name=table_name,
@@ -148,7 +127,7 @@ class InsightsRunner:
             self.insight_storage.save_many(insight_records)
 
         self.active_insight_storage.delete_by_attributes({
-            "table_name": qualified_table_name(table.name()),
+            "table_name": f'{namespace}.{table_name}' if table_name else '',
             "code": list(ids_to_run)
         })
 
@@ -166,6 +145,43 @@ class InsightsRunner:
                 for insight in run_result
             ]
             self.active_insight_storage.save_many(new_active_insights)
+
+    def _get_valid_run_ids(self, rule_ids: List[str] = None) -> Set[str]:
+        all_valid_ids: Set[str] = {rule.id for rule in ALL_RULES_OBJECT}
+        ids_to_run: Set[str]
+        
+        if rule_ids is None:
+            ids_to_run = all_valid_ids
+        else:
+            provided_ids = set(rule_ids)
+            invalid_ids = provided_ids - all_valid_ids
+            if invalid_ids:
+                raise ValueError(f"Invalid rule IDs provided: {', '.join(sorted(invalid_ids))}")
+            ids_to_run = provided_ids
+        
+        return ids_to_run
+
+    def run_for_table(self, table_identifier, rule_ids: List[str] = None, type: str = "manual") -> List[Insight]:
+        table = self.lakeview.load_table(table_identifier)
+
+        if "MULTIPLE_TABLES_SAME_LOCATION" in rule_ids:
+            location = getattr(table, "location", None)
+            if location in self._tables_by_location:
+                self._tables_by_location[location].append(table_identifier)
+            else:
+                self._tables_by_location[location] = [table_identifier]
+
+        ids_to_run = self._get_valid_run_ids(rule_ids)
+
+        namespace, table_name = get_namespace_and_table_name(table_identifier)
+
+        run_result: List[Insight] = [
+            insight
+            for rule in ALL_RULES_OBJECT
+            if rule.id in ids_to_run and rule.level == RuleLevel.TABLE and (insight := rule.method(table))
+        ]        
+
+        self._store_results(run_result, ids_to_run, type, namespace, table_name)
 
         return run_result
 
@@ -188,4 +204,10 @@ class InsightsRunner:
         for ns in namespaces:
             ns_str = ".".join(ns) if isinstance(ns, (tuple, list)) else str(ns)
             results.extend(self.run_for_namespace(ns_str, rule_ids, recursive=True, type=type))
+
+        if "MULTIPLE_TABLES_SAME_LOCATION" in rule_ids:
+            run_result: List[Insight] = rule_multiple_tables_same_location(self._tables_by_location)
+            ids_to_run = self._get_valid_run_ids(rule_ids)
+            self._store_results(run_result, ids_to_run, type)
+
         return results

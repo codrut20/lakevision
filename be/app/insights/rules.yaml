@@ -30,3 +30,7 @@ SKEWED_OR_LARGEST_PARTITIONS_TABLE:
   severity: Info
   message: "This table has {partitions} partitions. The largest partition is much bigger than the typical one. Median partition size: {median_size} bytes, largest partition: {largest_size} bytes. Median records: {median_records}, largest partition: {largest_records} records."
   suggested_action: "Review partitioning strategy; consider rebalancing data"
+MULTIPLE_TABLES_SAME_LOCATION:
+  severity: Warning
+  message: "More than one table cataloged using the same location. Tables sharing location: {tables}"
+  suggested_action: "Review and resolve duplicate table locations to avoid data corruption"

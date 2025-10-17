@@ -10,7 +10,7 @@ from collections import defaultdict
 from statistics import median
 from typing import Dict
 
-from app.models import Rule
+from app.models import Rule, RuleLevel
 from app.models import Insight
 
 rules_yaml_path = os.path.join(os.path.dirname(__file__), "rules.yaml")
@@ -252,6 +252,23 @@ def rule_skewed_or_largest_partitions_table(table: Table) -> Optional[Insight]:
         
     return None
 
+def rule_multiple_tables_same_location(tables_by_location: Dict[str, list[str]]) -> list[Insight]:
+    result = []
+    meta = INSIGHT_META["MULTIPLE_TABLES_SAME_LOCATION"]
+    for location, tables in tables_by_location.items():
+        if len(tables) > 0:
+            for tablename in tables:
+                result.append(
+                    Insight(
+                        code="MULTIPLE_TABLES_SAME_LOCATION",
+                        table=tablename,
+                        message=meta["message"].format(tables=", ".join(tables)),
+                        severity=meta["severity"],
+                        suggested_action=meta["suggested_action"]
+                    )
+                )
+    return result
+
 
 ALL_RULES = [
     rule_small_files, 
@@ -261,7 +278,8 @@ ALL_RULES = [
     rule_column_uuid_table, 
     rule_no_rows_table,
     rule_too_many_snapshot_table,
-    rule_skewed_or_largest_partitions_table
+    rule_skewed_or_largest_partitions_table,
+    rule_multiple_tables_same_location
 ]
 
 ALL_RULES_OBJECT = [
@@ -272,5 +290,6 @@ ALL_RULES_OBJECT = [
     Rule("UUID_COLUMN", "UUID type not universally supported", "UUID column type may not be supported in all environments, especially Spark and older Presto", rule_column_uuid_table),
     Rule("NO_ROWS_TABLE", "Empty table", "Table has been declared but has no data. Possibly intentional.", rule_no_rows_table),
     Rule("SNAPSHOT_SPRAWL_TABLE", "Too many snapshots", "A high snapshot count for a table creates memory and process overhead for the catalog service and catalog results processing on clients. Expire snapshots or adjust snapshot age configuration if practical.", rule_too_many_snapshot_table),
-    Rule("SKEWED_OR_LARGEST_PARTITIONS_TABLE", "Large partition", "The table contains one partition that is considerably larger than the rest. Evaluate if the table can be repartitioned by another column/criteria.", rule_skewed_or_largest_partitions_table)
+    Rule("SKEWED_OR_LARGEST_PARTITIONS_TABLE", "Large partition", "The table contains one partition that is considerably larger than the rest. Evaluate if the table can be repartitioned by another column/criteria.", rule_skewed_or_largest_partitions_table),
+    Rule("MULTIPLE_TABLES_SAME_LOCATION", "Multiple tables with the same location", "More than one table cataloged using the same location. Review and resolve duplicate table locations to avoid data corruption.", rule_multiple_tables_same_location, RuleLevel.LAKEHOUSE)
 ]

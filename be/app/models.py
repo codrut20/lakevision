@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import dataclasses
 from dataclasses import dataclass, field
 import uuid
+from enum import Enum
 
 from pyiceberg.table import FileScanTask
 from pyiceberg.typedef import Record
@@ -90,12 +91,17 @@ class JobSchedule:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     is_enabled: bool = True
 
+class RuleLevel(Enum):
+    TABLE = 'TABLE'
+    LAKEHOUSE = 'LAKEHOUSE'
+
 @dataclass
 class Rule:
     id: str
     name: str
     description: str
     method: Any
+    level: RuleLevel = RuleLevel.TABLE
 
 class RuleOut(BaseModel):
     id: str
