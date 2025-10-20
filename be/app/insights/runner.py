@@ -170,17 +170,18 @@ class InsightsRunner:
 
         return run_result
 
-    def run_for_namespace(self, namespace: str, rule_ids: List[str] = None, recursive: bool = True, type: str = "manual") -> Dict[str, List[Insight]]:
+    def run_for_namespace(self, namespace: str, rule_ids: List[str] = None, recursive: bool = False, type: str = "manual") -> Dict[str, List[Insight]]:
         tables = self.lakeview.get_tables(namespace)
         results = []
         for t_ident in tables:
             qualified = qualified_table_name(t_ident)
             results.extend(self.run_for_table(qualified, rule_ids, type))
         if recursive:
-            nested_namespaces = self.lakeview._get_nested_namespaces(namespace)
+            ns = tuple(namespace.split('.'))
+            nested_namespaces = self.lakeview._get_nested_namespaces(ns, len(ns))
             for ns in nested_namespaces:
                 ns_str = ".".join(ns)
-                results.extend(self.run_for_namespace(ns_str, rule_ids, recursive=False, type=type))
+                results.extend(self.run_for_namespace(ns_str, rule_ids, recursive=recursive, type=type))
         return results
 
     def run_for_lakehouse(self, rule_ids: List[str] = None, type: str = "manual") -> Dict[str, List[Insight]]:
