@@ -28,6 +28,7 @@
 	let AUTH_ENABLED = false;
 	let CHAT_ENABLED = false;
 	let CHAT_NAME = 'Chat';
+	let CHAT_DESCRIPTION = '';
 	let extra_link;
 	let extra_link_text;
 	let company = 'Apache Iceberg';
@@ -74,6 +75,9 @@
 		if (env.PUBLIC_CHAT_ENABLED == 'true') {
 			if (env.PUBLIC_CHAT_NAME) {
 				CHAT_NAME = env.PUBLIC_CHAT_NAME;
+			}
+			if (env.PUBLIC_CHAT_DESCRIPTION) {
+				CHAT_DESCRIPTION = env.PUBLIC_CHAT_DESCRIPTION;
 			}
 			CHAT_ENABLED = true;
 		}
@@ -201,11 +205,12 @@
 	size='lg'
 	passiveModal
 	bind:open={isChatOpen}
-	modalHeading="{CHAT_NAME} - Chat with your Lakehouse"
+	modalHeading="{CHAT_NAME}"
 	on:open={handleChatOpen}
 	on:close={handleChatClose}
 	on:click:overlay={handleChatClose}
 >
+	<p>{CHAT_DESCRIPTION}</p>
 	{#if user}
 		<Chat {user} />
 	{/if}
