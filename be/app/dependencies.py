@@ -56,6 +56,48 @@ schedule_storage = get_storage(model=JobSchedule)
 page_session_cache = {}
 namespaces = []
 ns_tables = {}
+total_lakehouse_size = 0
+
+LAKE_SIZE_REFRESH_INTERVAL = 900
+
+def refresh_total_lake_size():
+    """Periodically refresh the total size of all tables in the lakehouse."""
+    global total_lakehouse_size, ns_tables, lv
+    logging.info("Starting periodic refresh of total lakehouse size...")
+
+    # This task depends on ns_tables, so if it's not populated,
+    # skip this run and wait for the next timer.
+    if not ns_tables:
+        logging.warning("Namespaces/tables not loaded yet, skipping lake size refresh. Will retry.")
+        Timer(LAKE_SIZE_REFRESH_INTERVAL, refresh_total_lake_size).start()
+        return
+
+    current_total_size = 0
+
+    # ns_tables is a dict like: { ('db1',): ['tableA', 'tableB'], ('db1','sub1'): ['tableC'] }
+    for namespace_tuple, table_list in ns_tables.items():
+        if not table_list:
+            continue
+
+        # Convert namespace tuple ('db1', 'sub1') to string 'db1.sub1'
+        namespace_str = ".".join(namespace_tuple)
+
+        for table_name in table_list:
+            # Full table ID is 'db1.sub1.tableC'
+            table_id_str = f"{namespace_str}.{table_name}"
+            try:
+                table = lv.load_table(table_id_str)
+                table_size = lv.get_table_size_bytes(table) # Use our new function
+                current_total_size += table_size
+            except Exception as e:
+                # Log error but continue with other tables
+                logging.error(f"Failed to get size for table {table_id_str}: {e}")
+
+    total_lakehouse_size = current_total_size
+    logging.info(f"Total lakehouse size refresh complete. Total size: {total_lakehouse_size} bytes.")
+
+    # Reschedule the next run
+    Timer(LAKE_SIZE_REFRESH_INTERVAL, refresh_total_lake_size).start()
 
 def clean_cache():
     """Remove expired entries from the cache."""

@@ -4,15 +4,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse
-
+from threading import Timer
 from app import config
 from app.api_utils import CleanJSONResponse
 from app.exceptions import LVException
 from app.dependencies import (
     background_job_storage, schedule_storage,
-    clean_cache, refresh_namespace_and_tables
+    clean_cache, refresh_namespace_and_tables,
+    refresh_total_lake_size
 )
-from app.routers import auth, tables, insights, jobs
+from app.routers import auth, tables, insights, jobs, homepage
 
 # --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -28,9 +29,16 @@ async def lifespan(app: FastAPI):
     schedule_storage.ensure_table()
     
     # Start periodic maintenance tasks
-    refresh_namespace_and_tables()
     clean_cache()
+
+    # These are slow. Run them in a separate thread after a 1-sec delay
+    # so they don't block startup.
+    Timer(1.0, refresh_namespace_and_tables).start()
     
+    # Stagger this one slightly. It has a built-in check
+    # to wait for namespaces/tables to be loaded.
+    Timer(2.0, refresh_total_lake_size).start()
+
     print("Startup complete.")
     yield
     print("Application shutdown...")
@@ -67,3 +75,4 @@ app.include_router(auth.router)
 app.include_router(tables.router)
 app.include_router(insights.router)
 app.include_router(jobs.router)
+app.include_router(homepage.router)

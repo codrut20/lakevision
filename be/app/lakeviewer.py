@@ -142,6 +142,34 @@ class LakeView():
             df = pd.concat([df, df2])
         return df
     
+    def get_table_size_bytes(self, table):
+        """
+        Helper function to get the raw total file size of a table in bytes.
+        Tries to get from snapshot summary first, then falls back to scanning files.
+        """
+        if not table.metadata.current_snapshot_id:
+            return 0
+
+        try:
+            # 1. Try to get from the latest snapshot summary (fast)
+            paTable = table.inspect.snapshots().sort_by([('committed_at', 'descending')]).select(['summary'])
+            if paTable.num_rows > 0:
+                result = dict(paTable.to_pydict()['summary'][0])
+                total_file_size = int(result.get("total-files-size", -1))
+                if total_file_size != -1:
+                    return total_file_size
+
+            # 2. Fallback: scan all data files (slower, but accurate)
+            files_meta = table.inspect.files().select(['file_size_in_bytes'])
+            total_file_size_py = pc.sum(files_meta['file_size_in_bytes']).as_py()
+            
+            # pc.sum() returns None for an empty table, so default to 0
+            return total_file_size_py if total_file_size_py is not None else 0
+            
+        except Exception as e:
+            logging.warning(f"Could not calculate size for table {table.name()}: {e}")
+            return 0
+    
     def get_summary(self, table):
         #table = self.catalog.load_table(table_id)
         ret = {}         
